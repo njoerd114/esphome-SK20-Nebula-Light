@@ -1,5 +1,11 @@
 # Gitignore settings for ESPHome
 # This is an example and may include too much for your use-case.
-# You can modify this file to suit your needs.
+# You can modify this to suit your needs.
 /.esphome/
 /secrets.yaml
+/.omo/
+
+# Python test tooling
+__pycache__/
+*.pyc
+.pytest_cache/

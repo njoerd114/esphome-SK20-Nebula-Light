@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  # Run after the CI workflow succeeds on master.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       !contains(github.event.workflow_run.head_commit.message, '[skip ci]'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next calendar version
+        id: version
+        run: |
+          set -euo pipefail
+          year=$(date -u +%Y)
+          month=$(date -u +%m)
+          prefix="${year}.${month}."
+          latest=$(git tag -l "${prefix}*" | sort -V | tail -n1)
+          if [ -z "${latest}" ]; then
+            next="${year}.${month}.0"
+          else
+            patch="${latest##*.}"
+            next="${year}.${month}.$((patch + 1))"
+          fi
+          echo "next=${next}" >> "$GITHUB_OUTPUT"
+          echo "Next release: ${next}"
+
+      - name: Bump project version
+        run: python tools/bump_version.py "${{ steps.version.outputs.next }}"
+
+      - name: Commit version bump
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add recommended_base.yaml
+          if git diff --cached --quiet; then
+            echo "No version change to commit"
+          else
+            git commit -m "chore(release): ${{ steps.version.outputs.next }} [skip ci]"
+            git push origin HEAD:master
+          fi
+
+      - name: Tag the release
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.next }}"
+          if git ls-remote --tags origin "refs/tags/${tag}" | grep -q "${tag}"; then
+            echo "Tag ${tag} already exists"
+          else
+            git tag "${tag}"
+            git push origin "${tag}"
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.next }}
+          name: ${{ steps.version.outputs.next }}
+          generate_release_notes: true

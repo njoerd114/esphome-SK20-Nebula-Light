@@ -127,6 +127,17 @@ $ pip install -r requirements-test.txt
 $ pytest
 ```
 
+## Local development
+
+`recommended_base.yaml` fetches the package files from this repository over the network, so edits to
+`nebula_light_device.yaml` or `platform_bk72xx.yaml` only take effect once they are pushed. While
+developing, compile `local.yaml` instead, which includes the working-copy files directly:
+
+```bash
+$ esphome compile local.yaml
+$ esphome upload local.yaml
+```
+
 ## Versioning and releases
 
 Releases are tagged with a calendar version in the form `YEAR.MONTH.PATCH` (for example `2026.10.0`),

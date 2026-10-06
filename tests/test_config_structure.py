@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from conftest import REPO_ROOT, find
+from conftest import REPO_ROOT, find, load_yaml
 
 # Scenes that must be static (clear any running effect).
 STATIC_SCENES = {0, 1, 2, 3, 4, 5, 7}
@@ -165,3 +165,10 @@ def test_secrets_template_matches_config():
 @pytest.mark.parametrize("name", ["recommended_base.yaml", "nebula_light_device.yaml"])
 def test_no_ota_password_referenced(name):
     assert "ota_password" not in (REPO_ROOT / name).read_text()
+
+
+def test_local_build_uses_local_packages():
+    # local.yaml must include the working-copy files, not the remote package.
+    local = load_yaml("local.yaml")
+    assert local["packages"]["platform"] == "platform_bk72xx.yaml"
+    assert local["packages"]["device"] == "nebula_light_device.yaml"

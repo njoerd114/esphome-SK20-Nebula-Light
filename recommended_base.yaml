@@ -1,8 +1,17 @@
 substitutions:
   device_name: "Star Projector"
+  # Slider calibration defaults (per unit). Override here to tune your device;
+  # see the README "Slider calibration" section.
+  rgb_min_power: "20%"
+  laser_min_power: "56%"
+  motor_min_power: "15%"
 
 esphome:
   name: "nebula"
+  project:
+    name: "njoerd114.esphome_sk20_nebula_light"
+    version: "2026.10.0"
+  min_version: "2026.9.1"
 
 wifi:
   ssid: !secret wifi_ssid
@@ -13,29 +22,54 @@ wifi:
     ssid: "Fallback AP"
     password: !secret wifi_fallback_password
 
-captive_portal:
-
+# The captive portal is intentionally not enabled: it would add a plaintext
+# web-server OTA listener. The wifi fallback AP above still works for recovering
+# from a bad WiFi configuration, just without the automatic redirect page.
 logger:
   level: INFO
 
+# OTA updates are authenticated with the same key as the API. The web server OTA
+# endpoint is disabled so its plaintext /update route cannot bypass encryption.
 ota:
-  platform: esphome
-  password: !secret ota_password
+  - platform: esphome
+    encryption:
+      key: !secret api_key
 
 web_server:
   port: 80
+  ota: false
 
-# by default controlling is done via the button and via the web interface
-# if you use homeassistant you can uncomment below code:
-#api:
-#  password: !secret api_password
+# Home Assistant native API. Requires api_key in secrets.yaml; generate one
+# with: openssl rand -base64 32
+api:
+  encryption:
+    key: !secret api_key
 
 # or via MQTT:
 #mqtt:
 #  broker: !secret mqtt_broker
 
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "${device_name} IP Address"
+    ssid:
+      name: "${device_name} Wifi SSID"
+    mac_address:
+      name: "${device_name} MAC Address"
+
+sensor:
+  - platform: uptime
+    name: "${device_name} Uptime"
+    unit_of_measurement: min
+    filters:
+      - lambda: return x / 60.0;
+  - platform: wifi_signal
+    name: "${device_name} Wifi Signal"
+    update_interval: 60s
+
 packages:
   remote_package:
-    url: https://github.com/M4GNV5/esphome-SK20-Nebula-Light.git
+    url: https://github.com/njoerd114/esphome-SK20-Nebula-Light.git
     ref: master
     files: [platform_bk72xx.yaml, nebula_light_device.yaml]

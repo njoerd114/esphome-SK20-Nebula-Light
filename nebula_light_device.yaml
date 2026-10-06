@@ -1,9 +1,35 @@
 ---
 
 # Refs.:
-# - https://github.com/M4GNV5/esphome-SK20-Nebula-Light
+# - https://github.com/njoerd114/esphome-SK20-Nebula-Light
+# - https://github.com/M4GNV5/esphome-SK20-Nebula-Light (upstream)
 # - https://github.com/fonix232/esphome_nebula_light
 # - https://github.com/kireque/esphome_nebula_light/issues/8
+
+# Slider calibration. The RGB channels and the laser do not emit any light below
+# a minimum PWM duty, so the usable slider range is remapped onto the working
+# range here. These thresholds are per-unit: measure your device and override
+# them in your base config (recommended_base.yaml) if the defaults do not fit.
+substitutions:
+  rgb_min_power: "20%"
+  laser_min_power: "56%"
+  motor_min_power: "15%"
+
+# Remember which components were projecting so the Main Switch can restore the
+# last active state after being turned off. RAM only, so the flash is never worn.
+globals:
+  - id: saved_rgb_on
+    type: bool
+    restore_value: false
+    initial_value: "true"
+  - id: saved_laser_on
+    type: bool
+    restore_value: false
+    initial_value: "true"
+  - id: saved_motor_on
+    type: bool
+    restore_value: false
+    initial_value: "true"
 
 light:
   - platform: rgb
@@ -13,6 +39,10 @@ light:
     red: red
     green: green
     blue: blue
+    on_turn_on:
+      - script.execute: script_sync_state
+    on_turn_off:
+      - script.execute: script_sync_state
     effects:
       - random:
           transition_length: 2.5s
@@ -25,17 +55,89 @@ light:
           alpha: 95%
           intensity: 2.5%
       - strobe:
+          name: Strobe
       - pulse:
           transition_length: 30s
+          update_interval: 30s
           min_brightness: 5%
           max_brightness: 100%
+      - strobe:
+          name: Galaxy Travel
+          colors:
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 100%
+              blue: 100%
+              duration: 12s
+              transition_length: 12s
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 12s
+              transition_length: 12s
+            - state: true
+              brightness: 100%
+              red: 0%
+              green: 0%
+              blue: 100%
+              duration: 12s
+              transition_length: 12s
+            - state: true
+              brightness: 100%
+              red: 0%
+              green: 100%
+              blue: 0%
+              duration: 12s
+              transition_length: 12s
+            - state: true
+              brightness: 100%
+              red: 100%
+              green: 0%
+              blue: 0%
+              duration: 12s
+              transition_length: 12s
 
   - platform: monochromatic
     name: "${device_name} Laser"
     icon: mdi:laser-pointer
     id: laser
     output: laser_pwm
+    # The low end of the range is already remapped by laser_min_power, so a
+    # lighter gamma spreads the remaining slider travel more evenly.
+    gamma_correct: 2.0
     restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - script.execute: script_sync_state
+    on_turn_off:
+      - script.execute: script_sync_state
+    effects:
+      - flicker:
+          name: Twinkle
+          alpha: 98%
+          intensity: 3%
+      - flicker:
+          name: Twinkle Soft
+          alpha: 99%
+          intensity: 2%
+      - flicker:
+          name: Twinkle Restless
+          alpha: 95%
+          intensity: 6%
+      - pulse:
+          name: Breathing
+          transition_length: 15s
+          update_interval: 15s
+          min_brightness: 20%
+          max_brightness: 45%
+      - pulse:
+          name: Breathing Deep
+          transition_length: 25s
+          update_interval: 25s
+          min_brightness: 15%
+          max_brightness: 80%
 
   # Button LED (UP/Down position, no brightness control)
   - platform: status_led
@@ -59,19 +161,47 @@ fan:
   output: motor_pwm
   restore_mode: ALWAYS_OFF
 
-# The template switch representing the device is currently active (laser/light
-# or motor is ON).
+# The template switch representing the device is currently active: a light or
+# the laser is projecting. The motor alone projects nothing and is intentionally
+# not part of the "active" state, so it is stopped automatically when the last
+# light goes off (see script_sync_state).
 switch:
   - platform: template
     name: "${device_name} Main Switch"
     id: switch_main
-    lambda: "return (id(motor).state || id(laser).current_values.is_on() || id(rgb_light).current_values.is_on());"
+    lambda: "return (id(rgb_light).remote_values.is_on() || id(laser).remote_values.is_on());"
 
-    # Turn on using the white scene
+    # Restore the last active state (see script_sync_state) instead of a fixed
+    # scene, and re-arm the auto-off timer.
     turn_on_action:
-      - select.set_index:
-          id: select_scene
-          index: 3
+      - script.stop: script_turn_off_timer
+      - script.execute: script_turn_off_timer
+      - if:
+          condition:
+            lambda: "return id(saved_rgb_on);"
+          then:
+            - light.turn_on: rgb_light
+      - if:
+          condition:
+            lambda: "return id(saved_laser_on);"
+          then:
+            - light.turn_on: laser
+      - if:
+          condition:
+            lambda: "return id(saved_motor_on);"
+          then:
+            # A fan turned on without a speed jumps to max; keep a sane speed
+            # when the motor never ran before.
+            - if:
+                condition:
+                  lambda: "return id(motor).speed == 0;"
+                then:
+                  - fan.turn_on:
+                      id: motor
+                      speed: 50
+                else:
+                  - fan.turn_on: motor
+      - light.turn_on: button_led0
 
     # Completely turn off the laser, light, motor and button LED
     turn_off_action:
@@ -82,30 +212,46 @@ switch:
       - script.stop: script_turn_off_timer
 
 output:
+  # The RGB channels do not light up below the rgb_min_power duty, so remap the
+  # slider range [0%..100%] to [min..100%]. zero_means_zero keeps "off" at a
+  # real 0 instead of parking the channel at min_power.
   - platform: libretiny_pwm
     id: red
     pin: P9
     inverted: true
+    min_power: ${rgb_min_power}
+    zero_means_zero: true
 
   - platform: libretiny_pwm
     id: green
     pin: P24
     inverted: true
+    min_power: ${rgb_min_power}
+    zero_means_zero: true
 
   - platform: libretiny_pwm
     id: blue
     pin: P26
     inverted: true
+    min_power: ${rgb_min_power}
+    zero_means_zero: true
 
+  # The laser only starts lasing at the laser_min_power duty, so remap
+  # [0%..100%] to [min..100%]. zero_means_zero keeps "off" at a real 0.
   - platform: libretiny_pwm
     id: laser_pwm
     pin: P8
     inverted: true
+    min_power: ${laser_min_power}
+    zero_means_zero: true
 
+  # The motor stalls below the motor_min_power duty, so remap the speed range.
+  # zero_means_zero ensures "off" really means 0 (otherwise the motor spins).
   - platform: libretiny_pwm
     id: motor_pwm
     pin: P6
-    min_power: 15%
+    min_power: ${motor_min_power}
+    zero_means_zero: true
 
   - platform: gpio
     id: button_led0_gpio
@@ -154,6 +300,33 @@ script:
       - delay: 1h
       - switch.turn_off: switch_main
 
+  # Keep the button LED, the motor and the state snapshot in sync. Several
+  # components usually change within one action, so wait briefly (restarting
+  # cancels the pending delay). While something projects, remember what is on so
+  # the Main Switch can restore it; when nothing projects, stop the motor and the
+  # button LED. The off branch never touches the saved_* values, so the last
+  # active state survives the turn-off.
+  - id: script_sync_state
+    mode: restart
+    then:
+      - delay: 500ms
+      - if:
+          condition:
+            - switch.is_on: switch_main
+          then:
+            - lambda: |-
+                id(saved_rgb_on) = id(rgb_light).remote_values.is_on();
+                id(saved_laser_on) = id(laser).remote_values.is_on();
+                id(saved_motor_on) = id(motor).state;
+            - light.turn_on: button_led0
+          else:
+            - if:
+                condition:
+                  lambda: "return id(motor).state;"
+                then:
+                  - fan.turn_off: motor
+            - light.turn_off: button_led0
+
 select:
   platform: template
   name: "${device_name} Scene"
@@ -164,6 +337,10 @@ select:
     - "Scene - Green"
     - "Scene - White"
     - "Scene - Dimmed"
+    - "Scene - Red & Blue"
+    - "Scene - Galaxy"
+    - "Scene - Night Light"
+    - "Scene - Party"
   initial_option: "Scene - White"
   optimistic: true
   on_value:
@@ -176,6 +353,9 @@ select:
       - light.turn_on:
           id: button_led0
 
+      # Every static scene clears any running effect so effects do not leak from
+      # one scene into the next.
+
       # [INDEX=0]: Scene - Red
       - if:
           condition:
@@ -187,9 +367,11 @@ select:
                 red: 80%
                 green: 0%
                 blue: 50%
+                effect: "None"
             - light.turn_on:
                 id: laser
                 brightness: 60%
+                effect: "None"
             - fan.turn_on:
                 id: motor
                 speed: 40
@@ -205,9 +387,11 @@ select:
                 red: 50%
                 green: 0%
                 blue: 100%
+                effect: "None"
             - light.turn_on:
                 id: laser
                 brightness: 60%
+                effect: "None"
             - fan.turn_on:
                 id: motor
                 speed: 40
@@ -223,9 +407,11 @@ select:
                 red: 0%
                 green: 60%
                 blue: 30%
+                effect: "None"
             - light.turn_on:
                 id: laser
                 brightness: 60%
+                effect: "None"
             - fan.turn_on:
                 id: motor
                 speed: 40
@@ -241,9 +427,11 @@ select:
                 red: 100%
                 green: 100%
                 blue: 100%
+                effect: "None"
             - light.turn_on:
                 id: laser
                 brightness: 100%
+                effect: "None"
             - fan.turn_on:
                 id: motor
                 speed: 50
@@ -259,9 +447,83 @@ select:
                 red: 5%
                 green: 5%
                 blue: 5%
+                effect: "None"
             - light.turn_on:
                 id: laser
                 brightness: 30%
+                effect: "None"
             - fan.turn_on:
                 id: motor
                 speed: 10
+
+      # [INDEX=5]: Scene - Red & Blue
+      - if:
+          condition:
+            lambda: "return (id(select_scene).active_index() == 5);"
+          then:
+            - light.turn_on:
+                id: rgb_light
+                brightness: 100%
+                red: 100%
+                green: 0%
+                blue: 100%
+                effect: "None"
+            - light.turn_on:
+                id: laser
+                brightness: 100%
+                effect: "None"
+            - fan.turn_on:
+                id: motor
+                speed: 40
+
+      # [INDEX=6]: Scene - Galaxy
+      - if:
+          condition:
+            lambda: "return (id(select_scene).active_index() == 6);"
+          then:
+            - light.turn_on:
+                id: rgb_light
+                brightness: 100%
+                effect: "Galaxy Travel"
+            - light.turn_on:
+                id: laser
+                brightness: 80%
+                effect: "None"
+            - fan.turn_on:
+                id: motor
+                speed: 20
+
+      # [INDEX=7]: Scene - Night Light
+      - if:
+          condition:
+            lambda: "return (id(select_scene).active_index() == 7);"
+          then:
+            - light.turn_on:
+                id: rgb_light
+                brightness: 10%
+                red: 100%
+                green: 0%
+                blue: 0%
+                effect: "None"
+            - light.turn_off:
+                id: laser
+            - fan.turn_on:
+                id: motor
+                speed: 5
+
+      # [INDEX=8]: Scene - Party
+      - if:
+          condition:
+            lambda: "return (id(select_scene).active_index() == 8);"
+          then:
+            - light.turn_on:
+                id: rgb_light
+                brightness: 100%
+                effect: "Strobe"
+            - light.turn_on:
+                id: laser
+                brightness: 100%
+                effect: "None"
+            - fan.turn_on:
+                id: motor
+                speed: 60
